@@ -1767,10 +1767,6 @@ DxlError Dynamixel::ProcessReadCommunication(
       return DxlError::SYNC_READ_FAIL;
     }
     if (dxl_comm_result != COMM_SUCCESS) {
-      fprintf(
-        stderr, "%s Tx Fail [Dxl Size : %ld] [Error code : %d]\n",
-        is_fast ? "FastSyncRead" : "SyncRead",
-        read_data_list_.size(), dxl_comm_result);
       return DxlError::SYNC_READ_FAIL;
     }
   } else {
@@ -1783,10 +1779,6 @@ DxlError Dynamixel::ProcessReadCommunication(
       return DxlError::BULK_READ_FAIL;
     }
     if (dxl_comm_result != COMM_SUCCESS) {
-      fprintf(
-        stderr, "%s Tx Fail [Dxl Size : %ld] [Error code : %d]\n",
-        is_fast ? "FastBulkRead" : "BulkRead",
-        read_data_list_.size(), dxl_comm_result);
       return DxlError::BULK_READ_FAIL;
     }
   }
@@ -1806,10 +1798,6 @@ DxlError Dynamixel::ProcessReadCommunication(
       return DxlError::SYNC_READ_FAIL;
     }
     if (dxl_comm_result != COMM_SUCCESS) {
-      fprintf(
-        stderr, "%s Rx Fail [Dxl Size : %ld] [Error code : %d]\n",
-        is_fast ? "FastSyncRead" : "SyncRead",
-        read_data_list_.size(), dxl_comm_result);
       return DxlError::SYNC_READ_FAIL;
     }
   } else {
@@ -1822,10 +1810,6 @@ DxlError Dynamixel::ProcessReadCommunication(
       return DxlError::BULK_READ_FAIL;
     }
     if (dxl_comm_result != COMM_SUCCESS) {
-      fprintf(
-        stderr, "%s Rx Fail [Dxl Size : %ld] [Error code : %d]\n",
-        is_fast ? "FastBulkRead" : "BulkRead",
-        read_data_list_.size(), dxl_comm_result);
       return DxlError::BULK_READ_FAIL;
     }
   }

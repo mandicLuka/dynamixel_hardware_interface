@@ -175,6 +175,8 @@ public:
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
+  static constexpr std::size_t kConsecutiveReadFailureErrorThreshold = 5;
+
   // read() calls spin_some(), which may run a service callback on the same
   // thread. A recursive mutex keeps that transaction serialized without
   // deadlocking the callback against its owning read cycle.
@@ -195,6 +197,7 @@ private:
   double err_timeout_ms_;
   rclcpp::Duration read_error_duration_{0, 0};
   rclcpp::Duration write_error_duration_{0, 0};
+  std::size_t consecutive_read_failures_{0};
   bool is_read_in_error_{false};
   bool is_write_in_error_{false};
 

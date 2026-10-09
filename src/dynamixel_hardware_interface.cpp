@@ -634,11 +634,22 @@ hardware_interface::return_type DynamixelHardware::read(
         read_error_duration_ = rclcpp::Duration(0, 0);
       }
       read_error_duration_ = read_error_duration_ + period;
+      ++consecutive_read_failures_;
 
-      RCLCPP_ERROR_STREAM(
-        logger_,
-        "Dynamixel Read Fail (Duration: " << read_error_duration_.seconds() * 1000 << "ms/" <<
-          err_timeout_ms_ << "ms)");
+      if (consecutive_read_failures_ < kConsecutiveReadFailureErrorThreshold) {
+        RCLCPP_DEBUG_STREAM(
+          logger_,
+          "Dynamixel feedback read failed (" << consecutive_read_failures_ << "/" <<
+            kConsecutiveReadFailureErrorThreshold << " consecutive failures): " <<
+            Dynamixel::DxlErrorToString(dxl_comm_err_));
+      } else {
+        RCLCPP_ERROR_STREAM_THROTTLE(
+          logger_,
+          clock_,
+          1000,
+          "Dynamixel feedback read has failed " << consecutive_read_failures_ <<
+            " consecutive cycles: " << Dynamixel::DxlErrorToString(dxl_comm_err_));
+      }
 
       if (read_error_duration_.seconds() * 1000 >= err_timeout_ms_) {
         return hardware_interface::return_type::ERROR;
@@ -647,6 +658,7 @@ hardware_interface::return_type DynamixelHardware::read(
     }
     is_read_in_error_ = false;
     read_error_duration_ = rclcpp::Duration(0, 0);
+    consecutive_read_failures_ = 0;
   }
 
   CalcTransmissionToJoint();
@@ -697,14 +709,26 @@ hardware_interface::return_type DynamixelHardware::write(
   } else {
     write_error_duration_ = write_error_duration_ + period;
 
-    RCLCPP_ERROR_STREAM(
-      logger_,
-      "Dynamixel Write Fail (Duration: " << write_error_duration_.seconds() * 1000 << "ms/" <<
-        err_timeout_ms_ << "ms)");
-
     if (write_error_duration_.seconds() * 1000 >= err_timeout_ms_) {
+      if (consecutive_read_failures_ >= kConsecutiveReadFailureErrorThreshold) {
+        RCLCPP_ERROR_STREAM_THROTTLE(
+          logger_,
+          clock_,
+          1000,
+          "Dynamixel writes are skipped because feedback reads remain unavailable.");
+      } else {
+        RCLCPP_DEBUG_STREAM(
+          logger_,
+          "Dynamixel write skipped because the preceding feedback read failed (Duration: " <<
+            write_error_duration_.seconds() * 1000 << "ms/" << err_timeout_ms_ << "ms).");
+      }
       return hardware_interface::return_type::ERROR;
     }
+
+    RCLCPP_DEBUG_STREAM(
+      logger_,
+      "Dynamixel write skipped because the preceding feedback read failed (Duration: " <<
+        write_error_duration_.seconds() * 1000 << "ms/" << err_timeout_ms_ << "ms).");
     return hardware_interface::return_type::OK;
   }
 }
@@ -716,9 +740,6 @@ DxlError DynamixelHardware::CheckError(DxlError dxl_comm_err)
 
   // check comm error
   if (dxl_comm_err != DxlError::OK) {
-    RCLCPP_ERROR_STREAM_THROTTLE(
-      logger_, clock_, 1000,
-      "Communication Fail --> " << Dynamixel::DxlErrorToString(dxl_comm_err));
     dxl_status_ = COMM_ERROR;
     return dxl_comm_err;
   }
