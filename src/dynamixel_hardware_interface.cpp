@@ -389,6 +389,16 @@ hardware_interface::CallbackReturn DynamixelHardware::on_init(
     str_set_dxl_data_srv_name,
     std::bind(&DynamixelHardware::set_dxl_data_srv_callback, this, _1, _2));
 
+  std::string str_configure_dxl_srv_name = "dynamixel_hardware_interface/configure_dxl";
+  if (info_.hardware_parameters.find("configure_dxl_srv_name") !=
+    info_.hardware_parameters.end())
+  {
+    str_configure_dxl_srv_name = info_.hardware_parameters["configure_dxl_srv_name"];
+  }
+  configure_dxl_srv_ = create_service<dynamixel_interfaces::srv::ConfigureDxl>(
+    str_configure_dxl_srv_name,
+    std::bind(&DynamixelHardware::configure_dxl_srv_callback, this, _1, _2));
+
   // Reboot Dynamixel service
   std::string str_reboot_dxl_srv_name = "dynamixel_hardware_interface/reboot_dxl";
   if (info_.hardware_parameters.find("reboot_dxl_srv_name") != info_.hardware_parameters.end()) {
@@ -610,6 +620,7 @@ hardware_interface::CallbackReturn DynamixelHardware::stop()
 hardware_interface::return_type DynamixelHardware::read(
   [[maybe_unused]] const rclcpp::Time & time, const rclcpp::Duration & period)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   double period_ms = period.seconds() * 1000;
 
   if (dxl_status_ == REBOOTING) {
@@ -669,6 +680,7 @@ hardware_interface::return_type DynamixelHardware::read(
 hardware_interface::return_type DynamixelHardware::write(
   [[maybe_unused]] const rclcpp::Time & time, const rclcpp::Duration & period)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   if (dxl_status_ == DXL_OK || dxl_status_ == HW_ERROR) {
     dxl_comm_->WriteItemBuf();
 
@@ -1471,6 +1483,7 @@ void DynamixelHardware::get_dxl_data_srv_callback(
   const std::shared_ptr<dynamixel_interfaces::srv::GetDataFromDxl::Request> request,
   std::shared_ptr<dynamixel_interfaces::srv::GetDataFromDxl::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   uint8_t id = static_cast<uint8_t>(request->id);
   std::string name = request->item_name;
   uint32_t item_data = 0;
@@ -1491,6 +1504,7 @@ void DynamixelHardware::set_dxl_data_srv_callback(
   const std::shared_ptr<dynamixel_interfaces::srv::SetDataToDxl::Request> request,
   std::shared_ptr<dynamixel_interfaces::srv::SetDataToDxl::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   uint8_t dxl_id = static_cast<uint8_t>(request->id);
   uint32_t dxl_data = static_cast<uint32_t>(request->item_data);
   if (dxl_comm_->InsertWriteItemBuf(dxl_id, request->item_name, dxl_data) == DxlError::OK) {
@@ -1500,10 +1514,96 @@ void DynamixelHardware::set_dxl_data_srv_callback(
   }
 }
 
+bool DynamixelHardware::write_and_verify_dynamixel_register(
+  uint8_t id,
+  const std::string & register_name,
+  uint32_t value,
+  std::string & failure_message)
+{
+  if (dxl_comm_->WriteItem(id, id, register_name, value) != DxlError::OK) {
+    failure_message = "Failed to write '" + register_name + "'.";
+    return false;
+  }
+
+  uint32_t read_value = 0;
+  if (dxl_comm_->ReadItem(id, id, register_name, read_value) != DxlError::OK) {
+    failure_message = "Failed to read back '" + register_name + "'.";
+    return false;
+  }
+  if (read_value != value) {
+    failure_message = "Readback mismatch for '" + register_name + "': expected " +
+      std::to_string(value) + ", received " + std::to_string(read_value) + ".";
+    return false;
+  }
+  return true;
+}
+
+void DynamixelHardware::configure_dxl_srv_callback(
+  const std::shared_ptr<dynamixel_interfaces::srv::ConfigureDxl::Request> request,
+  std::shared_ptr<dynamixel_interfaces::srv::ConfigureDxl::Response> response)
+{
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
+  if (request->register_names.size() != request->register_values.size()) {
+    response->result = false;
+    response->message = "register_names and register_values must have equal lengths.";
+    return;
+  }
+
+  for (const std::string & register_name : request->register_names) {
+    if (register_name.empty()) {
+      response->result = false;
+      response->message = "Configuration register names must not be empty.";
+      return;
+    }
+    if (register_name == "Torque Enable" || register_name == "Operating Mode") {
+      response->result = false;
+      response->message =
+        "Torque Enable and Operating Mode are managed by this configuration service.";
+      return;
+    }
+  }
+
+  const uint8_t id = request->id;
+  const std::vector<std::pair<uint8_t, uint8_t>> motor{{id, id}};
+  if (dxl_comm_->DynamixelDisable(motor) != DxlError::OK) {
+    response->result = false;
+    response->message = "Failed to disable torque.";
+    return;
+  }
+
+  std::string failure_message;
+  if (!write_and_verify_dynamixel_register(id, "Torque Enable", 0, failure_message) ||
+    !write_and_verify_dynamixel_register(
+      id, "Operating Mode", request->operating_mode, failure_message))
+  {
+    response->result = false;
+    response->message = failure_message;
+    return;
+  }
+
+  for (std::size_t index = 0; index < request->register_names.size(); ++index) {
+    if (!write_and_verify_dynamixel_register(
+        id,
+        request->register_names[index],
+        request->register_values[index],
+        failure_message))
+    {
+      response->result = false;
+      response->message = failure_message;
+      return;
+    }
+  }
+
+  dxl_torque_state_ = dxl_comm_->GetDxlTorqueState();
+  response->result = true;
+  response->message = "DYNAMIXEL configuration verified; torque remains disabled.";
+}
+
 void DynamixelHardware::reboot_dxl_srv_callback(
   [[maybe_unused]] const std::shared_ptr<dynamixel_interfaces::srv::RebootDxl::Request> request,
   std::shared_ptr<dynamixel_interfaces::srv::RebootDxl::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   if (CommReset()) {
     response->result = true;
     RCLCPP_INFO_STREAM(logger_, "[reboot_dxl_srv_callback] SUCCESS");
@@ -1517,6 +1617,7 @@ void DynamixelHardware::set_dxl_torque_srv_callback(
   const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
   std::shared_ptr<std_srvs::srv::SetBool::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> lock(dynamixel_communication_mutex_);
   if (request->data) {
     if (dxl_torque_status_ == TORQUE_ENABLED) {
       response->success = true;

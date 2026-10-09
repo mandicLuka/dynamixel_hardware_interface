@@ -18,6 +18,7 @@
 #define DYNAMIXEL_HARDWARE_INTERFACE__DYNAMIXEL_HARDWARE_INTERFACE_HPP_
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <map>
@@ -38,6 +39,7 @@
 #include "dynamixel_hardware_interface/dynamixel/dynamixel.hpp"
 
 #include "dynamixel_interfaces/msg/dynamixel_state.hpp"
+#include "dynamixel_interfaces/srv/configure_dxl.hpp"
 #include "dynamixel_interfaces/srv/get_data_from_dxl.hpp"
 #include "dynamixel_interfaces/srv/set_data_to_dxl.hpp"
 #include "dynamixel_interfaces/srv/reboot_dxl.hpp"
@@ -173,6 +175,11 @@ public:
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
+  // read() calls spin_some(), which may run a service callback on the same
+  // thread. A recursive mutex keeps that transaction serialized without
+  // deadlocking the callback against its owning read cycle.
+  std::recursive_mutex dynamixel_communication_mutex_;
+
   ///// ros
   rclcpp::Logger logger_;
   rclcpp::Clock clock_;
@@ -325,6 +332,16 @@ private:
   void set_dxl_data_srv_callback(
     const std::shared_ptr<dynamixel_interfaces::srv::SetDataToDxl::Request> request,
     std::shared_ptr<dynamixel_interfaces::srv::SetDataToDxl::Response> response);
+
+  rclcpp::Service<dynamixel_interfaces::srv::ConfigureDxl>::SharedPtr configure_dxl_srv_;
+  void configure_dxl_srv_callback(
+    const std::shared_ptr<dynamixel_interfaces::srv::ConfigureDxl::Request> request,
+    std::shared_ptr<dynamixel_interfaces::srv::ConfigureDxl::Response> response);
+  bool write_and_verify_dynamixel_register(
+    uint8_t id,
+    const std::string & register_name,
+    uint32_t value,
+    std::string & failure_message);
 
   rclcpp::Service<dynamixel_interfaces::srv::RebootDxl>::SharedPtr reboot_dxl_srv_;
   void reboot_dxl_srv_callback(
